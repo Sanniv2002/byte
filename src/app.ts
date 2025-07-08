@@ -7,6 +7,6 @@ const app = express()
 
 app.use(express.json());
 
-app.use("/identify", validateData(identifySchema),  identifyRouter)
+app.use("/identify",  identifyRouter)
 
 export default app;

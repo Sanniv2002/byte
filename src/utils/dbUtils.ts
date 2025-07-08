@@ -1,23 +1,27 @@
 import { prisma } from "../services/dbClientService";
+import { Precedence } from '@prisma/client'
 
 type returnType = {
     "success" : boolean,
     "data" : any
 }
 
-const createContact = async (data: any, primary: boolean = false): Promise<returnType> => {
+const createContact = async (email: string, phoneNumber: string, isPrimary: boolean = false): Promise<returnType> => {
     try {
         const insertedContact = await prisma.contact.create({
             data: {
-                phoneNumber: data.phoneNumber,
-                email: data.email,
-                linkPrecedence: primary ? "primary" : "secondary"
+                phoneNumber: phoneNumber,
+                email: email,
+                linkedId: isPrimary ? null : null,
+                linkPrecedence: isPrimary ? Precedence.primary : Precedence.secondary,
+                createdAt: new Date(),
+                updatedAt: new Date()
             }
         })
 
         return {
             "success" : true,
-            "data" : insertedContact
+            "data" : [insertedContact]
         }
     } catch (error) {
         console.log("ERROR: ", error)
@@ -30,7 +34,7 @@ const createContact = async (data: any, primary: boolean = false): Promise<retur
 
 const getContact = async (email?: string, phoneNumber?: string) => {
     try {
-        const contact = await prisma.contact.findAll({
+        const contact = await prisma.contact.findMany({
             where: {
                 OR: [
                     email ? { email } : undefined,
@@ -45,7 +49,10 @@ const getContact = async (email?: string, phoneNumber?: string) => {
         }
     } catch (error) {
         console.error("ERROR:", error);
-        return false;
+        return {
+            "success" : false,
+            "data" : []
+        }
     }
 };
 

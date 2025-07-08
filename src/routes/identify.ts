@@ -1,12 +1,12 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 
-const identityRouter = Router()
+const identifyRouter = Router()
 
-identityRouter.post('/', (req: Request, res: Response) => {
+identifyRouter.post('/', (req: Request, res: Response) => {
     res.json({
         "message":  "Hello"
     })
 })
 
-export default identityRouter;
+export default identifyRouter;

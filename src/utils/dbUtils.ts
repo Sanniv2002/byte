@@ -1,5 +1,5 @@
 import { prisma } from "../services/dbClientService";
-import { Precedence } from '@prisma/client'
+import { Precedence, type Contact } from '@prisma/client'
 
 const createContact = async (email: string, phoneNumber: string, isPrimary: boolean = false, prevLinkId?: number) => {
     try {
@@ -22,68 +22,13 @@ const createContact = async (email: string, phoneNumber: string, isPrimary: bool
         console.log("ERROR: ", error)
         return {
             "success" : false,
-            "data" : null
+            "data" : {} as Contact
         }
     }
 }
 
-const getContacts = async (email?: string, phoneNumber?: string) => {
-  try {
-    const emailMatches = email
-      ? await prisma.contact.findMany({ where: { email } })
-      : [];
-
-    const phoneMatches = phoneNumber
-      ? await prisma.contact.findMany({ where: { phoneNumber } })
-      : [];
-
-    const contactMap = new Map<number, (typeof emailMatches)[number]>();
-
-    [...emailMatches, ...phoneMatches].forEach(contact => {
-      contactMap.set(contact.id, contact);
-    });
-
-    const uniqueContacts = Array.from(contactMap.values());
-
-    return {
-      success: true,
-      data: uniqueContacts,
-    };
-  } catch (error) {
-    console.error("ERROR:", error);
-    return {
-      success: false,
-      data: [],
-    };
-  }
-};
-
-const getLinkedContacts = async (email?: string, phoneNumber?: string) => {
-  try {
-    const primary = await getPrimaryContact(email, phoneNumber);
-    console.log(primary)
-
-    if (!primary) {
-      return {
-        success: true,
-        data: [],
-      };
-    }
-
-    const linkedContacts = await getContacts(primary.email ?? undefined, primary.phoneNumber ?? undefined);
-
-    return linkedContacts;
-
-  } catch (error) {
-    console.error("ERROR:", error);
-    return {
-      success: false,
-      data: [],
-    };
-  }
-};
-
-const isExistingExists = async (email: string, phoneNumber: string) => {
+const getContact = async (email: string, phoneNumber: string) => {
+  // Looks for exact match
   try {
     const contact = await prisma.contact.findFirst({
       where: {
@@ -92,14 +37,14 @@ const isExistingExists = async (email: string, phoneNumber: string) => {
       },
     });
 
-    return contact !== null;
+    return contact;
   } catch (error) {
     console.error("ERROR:", error);
-    return false
+    return null
   }
 };
 
-const getLinkedContactId = async (email?: string, phoneNumber?: string) => {
+const getLinkingContactId = async (email?: string, phoneNumber?: string) => {
     try {
         const contact = await prisma.contact.findFirst({
             where: {
@@ -115,31 +60,80 @@ const getLinkedContactId = async (email?: string, phoneNumber?: string) => {
     }
 }
 
-const getPrimaryContact = async (email?: string, phoneNumber?: string) => {
-  try {
-    const contact = await prisma.contact.findFirst({
+const findPrimaryContact = async (id: number): Promise<Contact> => {
+  const contact = await prisma.contact.findUnique({ where: { id } });
+  if (!contact) throw new Error(`Contact with id ${id} not found`);
+  if (contact.linkPrecedence === Precedence.primary) return contact;
+  return findPrimaryContact(contact.linkedId!);
+};
+
+const getPrimaryAndAllContacts = async (
+  startingId: number
+): Promise<Contact[]> => {
+
+  // Recursively collect all secondaries
+  const findAllSecondaryContacts = async (
+    parentIds: Set<number>,
+    visited = new Set<number>(),
+    allContacts: Contact[] = []
+  ): Promise<Contact[]> => {
+    const contacts = await prisma.contact.findMany({
       where: {
-        linkPrecedence: "primary",
-        OR: [
-          email ? { email } : undefined,
-          phoneNumber ? { phoneNumber } : undefined,
-        ].filter(Boolean) as any,
+        linkedId: {
+          in: [...parentIds],
+        },
       },
     });
 
-    return contact;
-  } catch (error) {
-    console.error("ERROR:", error);
-    return null;
-  }
+    const newContacts = contacts.filter((c) => !visited.has(c.id));
+    const newIds = new Set(newContacts.map((c) => c.id));
+    newContacts.forEach((c) => visited.add(c.id));
+    allContacts.push(...newContacts);
+
+    if (newIds.size === 0) return allContacts;
+
+    return findAllSecondaryContacts(newIds, visited, allContacts);
+  };
+
+  const primary = await findPrimaryContact(startingId);
+  const secondaries = await findAllSecondaryContacts(new Set([primary.id]));
+
+  return [primary, ...secondaries];
 };
 
-const toggleContactPrimary = async (id: number) => {
-    try {
+const isSplitIdentityMatch = async (email: string, phoneNumber: string): Promise<{ isSplit: boolean; data: Pick<Contact, 'linkPrecedence' | 'id' | 'createdAt'>[]}> => {
+  const contacts = await prisma.contact.findMany({
+    where: {
+      OR: [{ email }, { phoneNumber }],
+    },
+    select: {
+      linkPrecedence: true,
+      id: true,
+      createdAt: true
+    },
+  });
 
-    } catch (error) {
-
-    }
+  return {
+    "isSplit" : contacts.length === 2 && contacts[0].linkPrecedence === Precedence.primary && contacts[1].linkPrecedence === Precedence.primary,
+    "data" : contacts
+  };
 }
 
-export { createContact, getContacts, toggleContactPrimary, isExistingExists, getLinkedContactId, getLinkedContacts }
+
+const splitPrimary = async (primary_ids: Pick<Contact, 'linkPrecedence' | 'id' | 'createdAt'>[]) => {
+  const [first, second] = primary_ids;
+
+  const newer = first.createdAt > second.createdAt ? first : second;
+  const updatedContact = await prisma.contact.update({
+    where: { id: newer.id },
+    data: {
+      linkPrecedence: Precedence.secondary,
+      updatedAt: new Date(),
+      linkedId: first.createdAt < second.createdAt ? first.id : second.id,
+    },
+  });
+
+  return updatedContact;
+}
+
+export { createContact, getContact, getLinkingContactId, findPrimaryContact, getPrimaryAndAllContacts, isSplitIdentityMatch, splitPrimary }

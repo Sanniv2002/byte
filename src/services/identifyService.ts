@@ -1,44 +1,50 @@
-import { createContact, getContacts, getLinkedContactId, isExistingExists, getLinkedContacts } from "../utils/dbUtils";
+import { createContact, getLinkingContactId, getContact, getPrimaryAndAllContacts, isSplitIdentityMatch, splitPrimary } from "../utils/dbUtils";
 import { construct_response } from "../utils/responseUtil";
 import type { IdentifyServiceResponse } from "../types/response";
+import type { Contact } from "@prisma/client";
 
 
 class IdentifyService{
     private readonly email: string;
     private readonly phoneNumber: string;
+    private contacts: Contact[];
 
     constructor(email?: string, phoneNumber?: string) {
-        this.email = email || ""
-        this.phoneNumber = phoneNumber || ""
+        this.email = email || "";
+        this.phoneNumber = phoneNumber || "";
+        this.contacts = [];
     }
 
     async identify(): Promise<IdentifyServiceResponse> {
-        // TODO: 2 db queries, can be converted to computation matching
-        const allContacts = await getLinkedContacts(this.email, this.phoneNumber)
-        const isExisting = await isExistingExists(this.email, this.phoneNumber)
+        const linkId = await getLinkingContactId(this.email, this.phoneNumber);
+        const isSplitIdentity = await isSplitIdentityMatch(this.email, this.phoneNumber)
 
-        let contacts = allContacts.data;
-        if (!allContacts.success) {
-            throw new Error("Something went wrong!")
-        }
-
-        // Case 1: No previous contact exists, make a new contact
-        if (allContacts.data.length < 1 ) {
-            const contact = await createContact(this.email, this.phoneNumber, true)
-            if (contact.data) {
-                contacts.push(contact.data)
+        if (this.email && this.phoneNumber){
+            const isExisting = await getContact(this.email, this.phoneNumber);
+            if (isSplitIdentity.isSplit) {
+                const updatedContact = await splitPrimary(isSplitIdentity.data);
+                this.contacts = await getPrimaryAndAllContacts(updatedContact.id);
+            } else if (isExisting) {
+                // Exact Contact is found
+                this.contacts = await getPrimaryAndAllContacts(isExisting.id);
+            } else if (linkId) {
+                // Inserting a secondary contact
+                const newSecondaryContact = await createContact(this.email, this.phoneNumber, false, linkId);
+                this.contacts = await getPrimaryAndAllContacts(newSecondaryContact.data.id);
+            } else {
+                // Inserting a new primary contact
+                const newPrimaryContact = await createContact(this.email, this.phoneNumber, true);
+                this.contacts = await getPrimaryAndAllContacts(newPrimaryContact.data.id);
+            }
+        } else {
+            if (linkId) {
+                this.contacts = await getPrimaryAndAllContacts(linkId);
+            } else {
+                const newPrimaryContact = await createContact(this.email, this.phoneNumber, true);
+                this.contacts = await getPrimaryAndAllContacts(newPrimaryContact.data.id);
             }
         }
-
-        // Case 2: A contact exists, create a secondary contact
-        else if (!isExisting) {
-            const linkedId = await getLinkedContactId(this.email, this.phoneNumber)
-            const contact = await createContact(this.email, this.phoneNumber, false, linkedId)
-            if (contact.data) {
-                contacts.push(contact.data)
-            }
-        }
-        return construct_response(contacts)
+        return construct_response(this.contacts)
     }
 }
 
